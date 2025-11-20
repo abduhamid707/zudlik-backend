@@ -41,7 +41,7 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Parol kiriting'],
     minlength: [6, 'Parol kamida 6 ta belgidan iborat bo\'lishi kerak'],
-    select: false // Odatda parolni qaytarmaymiz
+    select: false
   },
   rol: {
     type: String,
@@ -60,6 +60,17 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  
+  // ⭐ ADD THESE NEW FIELDS:
+  parolTiklashToken: {
+    type: String,
+    select: false
+  },
+  parolTiklashMuddati: {
+    type: Date,
+    select: false
+  },
+  
   createdAt: {
     type: Date,
     default: Date.now
@@ -67,7 +78,6 @@ const userSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
-
 // Parolni hash qilish (saqlashdan oldin)
 userSchema.pre('save', async function(next) {
   // Agar parol o'zgarmagan bo'lsa, o'tkazib yuboramiz
