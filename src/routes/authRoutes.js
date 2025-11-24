@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, login, getMe, forgotPassword, resetPassword } = require('../controllers/authController');
+const { register, login, getMe, forgotPassword, resetPassword, changePassword, updateProfile } = require('../controllers/authController');
 const { himoyalash } = require('../middleware/authMiddleware');
 
 // Public routes
@@ -10,5 +10,7 @@ router.post('/forgot-password', forgotPassword);  // ⭐ ADD THIS
 router.put('/reset-password/:resetToken', resetPassword);  // ⭐ AND THIS
 // Private routes
 router.get('/me', himoyalash, getMe);
+router.put('/update-profile', himoyalash, updateProfile);  
+router.put('/change-password', himoyalash, changePassword);  
 
 module.exports = router;

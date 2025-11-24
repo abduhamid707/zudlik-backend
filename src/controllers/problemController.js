@@ -463,38 +463,56 @@ exports.closeProblem = async (req, res) => {
 // @access  Public
 exports.getUserProblems = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1
-    const limit = parseInt(req.query.limit) || 10
-    const skip = (page - 1) * limit
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
 
     const problems = await Problem.find({
       muallif: req.params.userId,
       aktiv: true,
     })
       .populate('muallif', 'ism familiya avatar')
+      .populate('yechilganComment', 'matn muallif') // ✅ Yechilgan comment
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
+      .lean(); // ✅ Performance uchun
+
+    // ✅ Anonim muallif ma'lumotlarini yashirish
+    const processedProblems = problems.map((problem) => {
+      if (problem.anonim && problem.muallif) {
+        return {
+          ...problem,
+          muallif: {
+            _id: problem.muallif._id,
+            ism: 'Anonim',
+            familiya: 'Foydalanuvchi',
+            avatar: null,
+          },
+        };
+      }
+      return problem;
+    });
 
     const total = await Problem.countDocuments({
       muallif: req.params.userId,
       aktiv: true,
-    })
+    });
 
     res.status(200).json({
       success: true,
-      count: problems.length,
+      count: processedProblems.length,
       total,
       totalPages: Math.ceil(total / limit),
       currentPage: page,
-      problems,
-    })
+      problems: processedProblems, // ✅ Processed problems
+    });
   } catch (error) {
-    console.error('Foydalanuvchi muammolarini olish xatosi:', error)
+    console.error('Foydalanuvchi muammolarini olish xatosi:', error);
     res.status(500).json({
       success: false,
       xabar: 'Server xatosi',
       xato: error.message,
-    })
+    });
   }
-}
+};

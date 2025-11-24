@@ -27,6 +27,9 @@ app.use('/api/auth', require('./src/routes/authRoutes'));
 app.use('/api/problems', require('./src/routes/problemRoutes'));
 app.use('/api', require('./src/routes/commentRoutes'));
 app.use('/api/tags', require('./src/routes/tagsRoutes'));
+app.use('/api/notifications', require('./src/routes/notifications'))
+
+
 
 // Test route
 app.get('/', (req, res) => {

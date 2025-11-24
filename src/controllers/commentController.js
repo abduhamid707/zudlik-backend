@@ -1,78 +1,112 @@
 const Comment = require('../models/Comment');
 const Problem = require('../models/Problem');
+const {createNotification} = require('../utils/notification');
+
 
 // @desc    Comment yaratish
 // @route   POST /api/problems/:problemId/comments
 // @access  Private
+// CREATE Comment
 exports.createComment = async (req, res) => {
   try {
     const { matn, asosiyComment, anonim } = req.body;
-    
-    // Validatsiya
+
+    // --- Validatsiya ---
     if (!matn || matn.trim().length < 5) {
       return res.status(400).json({
         success: false,
-        xabar: 'Comment kamida 5 ta belgidan iborat bo\'lishi kerak'
+        xabar: "Comment kamida 5 ta belgidan iborat bo'lishi kerak"
       });
     }
-    
-    // Problem mavjudligini tekshirish
+
+    // --- Problem mavjudligini tekshirish ---
     const problem = await Problem.findById(req.params.problemId);
     if (!problem || !problem.aktiv) {
       return res.status(404).json({
         success: false,
-        xabar: 'Muammo topilmadi'
+        xabar: "Muammo topilmadi"
       });
     }
-    
-    // Agar reply bo'lsa, asosiy comment mavjudligini tekshirish
+
+    // --- Agar reply bo'lsa, asosiy comment mavjudligini tekshirish ---
+    let parentComment = null;
     if (asosiyComment) {
-      const parentComment = await Comment.findById(asosiyComment);
+      parentComment = await Comment.findById(asosiyComment);
       if (!parentComment || !parentComment.aktiv) {
         return res.status(404).json({
           success: false,
-          xabar: 'Asosiy comment topilmadi'
+          xabar: "Asosiy comment topilmadi"
         });
       }
     }
-    
-    // Comment yaratish
+
+    // --- Comment yaratish ---
     const comment = await Comment.create({
       problem: req.params.problemId,
       muallif: req.user.id,
       matn,
       asosiyComment: asosiyComment || null,
-      anonim: anonim === true
+      anonim: Boolean(anonim)  // anonim flag
     });
-    
-    await comment.populate('muallif', 'ism familiya avatar');
-    
-    // Anonim bo'lsa muallif ma'lumotini yashirish
+
+    // --- Muallifni populate qilish ---
+    await comment.populate("muallif", "ism familiya avatar");
+
+
+    // Notification yaratish
+    if (asosiyComment) {
+      // Reply notification
+      const parentComment = await Comment.findById(asosiyComment);
+      await createNotification({
+        qabulQiluvchi: parentComment.muallif,
+        yuboruvchi: req.user.id,
+        turi: 'reply',
+        matn: `${comment.muallif.ism} sizning commentingizga javob berdi`,
+        havolaManzil: `/problems/${problem._id}`,
+        problem: problem._id,
+        comment: comment._id
+      });
+    } else {
+      // Comment notification
+      await createNotification({
+        qabulQiluvchi: problem.muallif,
+        yuboruvchi: req.user.id,
+        turi: 'comment',
+        matn: `${comment.muallif.ism} muammoingizga javob berdi`,
+        havolaManzil: `/problems/${problem._id}`,
+        problem: problem._id,
+        comment: comment._id
+      });
+    }
+
+    // --- Agar anonim bo'lsa, muallifni masklash ---
     const response = comment.toObject();
     if (response.anonim) {
       response.muallif = {
         _id: response.muallif._id,
-        ism: 'Anonim',
-        familiya: 'Foydalanuvchi',
+        ism: "Anonim",
+        familiya: "Foydalanuvchi",
         avatar: null
       };
     }
-    
-    res.status(201).json({
+
+    // --- Javob yoki asosiy comment bo'yicha xabar ---
+    return res.status(201).json({
       success: true,
-      xabar: asosiyComment ? 'Javob qo\'shildi' : 'Comment qo\'shildi',
+      xabar: asosiyComment ? "Javob qo'shildi" : "Comment qo'shildi",
       comment: response
     });
-    
+
   } catch (error) {
-    console.error('Comment yaratish xatosi:', error);
-    res.status(500).json({
+    console.error("Comment yaratish xatosi:", error);
+    return res.status(500).json({
       success: false,
-      xabar: 'Server xatosi',
+      xabar: "Server xatosi",
       xato: error.message
     });
   }
 };
+
 
 // @desc    Comment tahrirlash
 // @route   PUT /api/comments/:id
@@ -208,35 +242,21 @@ exports.markAsSolution = async (req, res) => {
     const problem = await Problem.findById(req.params.problemId);
     
     if (!problem || !problem.aktiv) {
-      return res.status(404).json({
-        success: false,
-        xabar: 'Muammo topilmadi'
-      });
+      return res.status(404).json({ success: false, xabar: 'Muammo topilmadi' });
     }
     
-    // Faqat problem muallifi belgilashi mumkin
     if (problem.muallif.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        xabar: 'Faqat muammo muallifi javobni belgilashi mumkin'
-      });
+      return res.status(403).json({ success: false, xabar: 'Faqat muammo muallifi javobni belgilashi mumkin' });
     }
     
     const comment = await Comment.findById(req.params.commentId);
     
     if (!comment || !comment.aktiv) {
-      return res.status(404).json({
-        success: false,
-        xabar: 'Comment topilmadi'
-      });
+      return res.status(404).json({ success: false, xabar: 'Comment topilmadi' });
     }
     
-    // Comment shu muammoga tegishli ekanini tekshirish
     if (comment.problem.toString() !== problem._id.toString()) {
-      return res.status(400).json({
-        success: false,
-        xabar: 'Comment bu muammoga tegishli emas'
-      });
+      return res.status(400).json({ success: false, xabar: 'Comment bu muammoga tegishli emas' });
     }
     
     // Oldingi javobni bekor qilish
@@ -249,8 +269,11 @@ exports.markAsSolution = async (req, res) => {
     }
     
     // Yangi javob belgilash
-    await comment.javobQilish();
-    await problem.yechildiDeb(comment._id);
+    comment.javobmi = true;
+    await comment.save();
+    
+    problem.yechilganComment = comment._id;
+    await problem.save();
     
     await comment.populate('muallif', 'ism familiya avatar');
     
@@ -263,47 +286,73 @@ exports.markAsSolution = async (req, res) => {
     
   } catch (error) {
     console.error('Javob belgilash xatosi:', error);
-    res.status(500).json({
-      success: false,
-      xabar: 'Server xatosi',
-      xato: error.message
-    });
+    res.status(500).json({ success: false, xabar: 'Server xatosi', xato: error.message });
   }
 };
+
 
 // @desc    Problem commentlarini olish
 // @route   GET /api/problems/:problemId/comments
 // @access  Public
+// GET Comments
 exports.getComments = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 20;
     const skip = (page - 1) * limit;
-    
-    // Faqat asosiy commentlar (reply emas)
-    const comments = await Comment.find({
+
+    // --- COMMENT OQISH ---
+    let comments = await Comment.find({
       problem: req.params.problemId,
       asosiyComment: null,
       aktiv: true
     })
-      .populate('muallif', 'ism familiya avatar')
+      .populate("muallif", "ism familiya avatar")
       .populate({
-        path: 'replies',
+        path: "replies",
         match: { aktiv: true },
-        populate: { path: 'muallif', select: 'ism familiya avatar' },
+        populate: { path: "muallif", select: "ism familiya avatar" },
         options: { sort: { createdAt: 1 } }
       })
       .sort({ javobmi: -1, likeSoni: -1, createdAt: -1 })
       .skip(skip)
-      .limit(limit);
-    
+      .limit(limit)
+      .lean(); // lean() yordamida .toObject ishlatish shart emas
+
+    // --- ANONIMNI MASK QILISH ---
+    const maskAnon = (user, isAnon) => {
+      if (!user) return null;
+      if (!isAnon) return user;
+      return {
+        _id: user._id,
+        ism: "Anonim",
+        familiya: "Foydalanuvchi",
+        avatar: null
+      };
+    };
+
+    // --- Har bir comment va reply uchun anonimni masklash ---
+    comments = comments.map(comment => {
+      comment.muallif = maskAnon(comment.muallif, comment.anonim);
+
+      if (Array.isArray(comment.replies)) {
+        comment.replies = comment.replies.map(rep => {
+          rep.muallif = maskAnon(rep.muallif, rep.anonim);
+          return rep;
+        });
+      }
+
+      return comment;
+    });
+
+    // --- TOTAL COUNT ---
     const total = await Comment.countDocuments({
       problem: req.params.problemId,
       asosiyComment: null,
       aktiv: true
     });
-    
-    res.status(200).json({
+
+    return res.status(200).json({
       success: true,
       count: comments.length,
       total,
@@ -311,13 +360,17 @@ exports.getComments = async (req, res) => {
       currentPage: page,
       comments
     });
-    
+
   } catch (error) {
-    console.error('Commentlarni olish xatosi:', error);
-    res.status(500).json({
+    console.error("Commentlarni olish xatosi:", error);
+    return res.status(500).json({
       success: false,
-      xabar: 'Server xatosi',
+      xabar: "Server xatosi",
       xato: error.message
     });
   }
 };
+
+
+
+

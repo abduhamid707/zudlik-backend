@@ -1,5 +1,8 @@
 const User = require('../models/User');
+const Problem = require('../models/Problem');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 const { registerValidatsiya, loginValidatsiya } = require('../utils/validation');
 
 // JWT token yaratish
@@ -7,6 +10,27 @@ const tokenYarat = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE
   });
+};
+
+// Email yuborish funksiyasi
+const sendEmail = async (options) => {
+  const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
+    port: process.env.EMAIL_PORT,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD
+    }
+  });
+  
+  const mailOptions = {
+    from: `Zudlik <${process.env.EMAIL_FROM}>`,
+    to: options.email,
+    subject: options.subject,
+    html: options.message
+  };
+  
+  await transporter.sendMail(mailOptions);
 };
 
 // @desc    Ro'yxatdan o'tish
@@ -107,7 +131,7 @@ exports.login = async (req, res) => {
         { email: emailYokiTelefon },
         { telefon: emailYokiTelefon }
       ]
-    }).select('+parol'); // Parolni ham qaytarish
+    }).select('+parol');
     
     // Foydalanuvchi topilmasa
     if (!user) {
@@ -163,6 +187,10 @@ exports.login = async (req, res) => {
     });
   }
 };
+
+// @desc    Parolni unutish
+// @route   POST /api/auth/forgot-password
+// @access  Public
 exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
@@ -179,7 +207,6 @@ exports.forgotPassword = async (req, res) => {
     const user = await User.findOne({ email });
     
     if (!user) {
-      // Security: Foydalanuvchi topilmasa ham success qaytaramiz (email enumeration attack oldini olish)
       return res.status(200).json({
         success: true,
         xabar: 'Agar bu email ro\'yxatdan o\'tgan bo\'lsa, parolni tiklash havolasini yubordik'
@@ -225,7 +252,6 @@ exports.forgotPassword = async (req, res) => {
     } catch (error) {
       console.error('Email yuborish xatosi:', error);
       
-      // Xatolik bo'lsa tokenni o'chirish
       user.parolTiklashToken = undefined;
       user.parolTiklashMuddati = undefined;
       await user.save({ validateBeforeSave: false });
@@ -281,7 +307,7 @@ exports.resetPassword = async (req, res) => {
       .update(req.params.resetToken)
       .digest('hex');
     
-    // Foydalanuvchini topish (token amal qilish muddati tekshiriladi)
+    // Foydalanuvchini topish
     const user = await User.findOne({
       parolTiklashToken: resetPasswordToken,
       parolTiklashMuddati: { $gt: Date.now() }
@@ -328,33 +354,52 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
-// Email yuborish funksiyasi
-const sendEmail = async (options) => {
-  // Nodemailer transporter
-  const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: process.env.EMAIL_PORT,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASSWORD
-    }
-  });
-  
-  const mailOptions = {
-    from: `Zudlik <${process.env.EMAIL_FROM}>`,
-    to: options.email,
-    subject: options.subject,
-    html: options.message
-  };
-  
-  await transporter.sendMail(mailOptions);
-};
-// @desc    Foydalanuvchi ma'lumotlarini olish
+// @desc    Foydalanuvchi ma'lumotlarini olish (profil sahifasi uchun)
 // @route   GET /api/auth/me
 // @access  Private
 exports.getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        xabar: 'Foydalanuvchi topilmadi'
+      });
+    }
+    
+    // Foydalanuvchining problemlari statistikasi
+    const muammolarSoni = await Problem.countDocuments({ 
+      muallif: user._id,
+      aktiv: true 
+    });
+    
+    const yechilganlar = await Problem.countDocuments({ 
+      muallif: user._id,
+      holat: 'yechilgan',
+      aktiv: true 
+    });
+    
+    const javoblar = await Problem.countDocuments({ 
+      muallif: user._id,
+      commentlarSoni: { $gt: 0 },
+      aktiv: true 
+    });
+    
+    const korishlar = await Problem.aggregate([
+      { 
+        $match: { 
+          muallif: user._id,
+          aktiv: true 
+        } 
+      },
+      { 
+        $group: { 
+          _id: null, 
+          jami: { $sum: '$korishlar' } 
+        } 
+      }
+    ]);
     
     res.status(200).json({
       success: true,
@@ -362,16 +407,201 @@ exports.getMe = async (req, res) => {
         id: user._id,
         ism: user.ism,
         familiya: user.familiya,
+        toliqIsm: user.toliqIsm,
         email: user.email,
         telefon: user.telefon,
         rol: user.rol,
         avatar: user.avatar,
         tasdiqlanganEmail: user.tasdiqlanganEmail,
-        createdAt: user.createdAt
+        aktiv: user.aktiv,
+        createdAt: user.createdAt,
+        // Statistika
+        statistika: {
+          muammolarSoni,
+          yechilganlar,
+          javoblar,
+          korishlar: korishlar.length > 0 ? korishlar[0].jami : 0
+        }
       }
     });
   } catch (error) {
     console.error('GetMe xatosi:', error);
+    res.status(500).json({
+      success: false,
+      xabar: 'Server xatosi',
+      xato: error.message
+    });
+  }
+};
+
+
+
+
+exports.updateProfile = async (req, res) => {
+  try {
+    const { ism, familiya, email, telefon, avatar } = req.body;
+    
+    // Validatsiya
+    if (!ism || !familiya || !email || !telefon) {
+      return res.status(400).json({
+        success: false,
+        xabar: 'Barcha maydonlarni to\'ldiring'
+      });
+    }
+
+    // Email format tekshirish
+    const emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        xabar: 'To\'g\'ri email kiriting'
+      });
+    }
+
+    // Telefon format tekshirish
+    const telefonRegex = /^(\+998|998)?[0-9]{9}$/;
+    if (!telefonRegex.test(telefon)) {
+      return res.status(400).json({
+        success: false,
+        xabar: 'To\'g\'ri telefon raqam kiriting'
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        xabar: 'Foydalanuvchi topilmadi'
+      });
+    }
+
+    // Email o'zgargan bo'lsa, mavjudligini tekshirish
+    if (email !== user.email) {
+      const emailMavjud = await User.findOne({ email, _id: { $ne: user._id } });
+      if (emailMavjud) {
+        return res.status(400).json({
+          success: false,
+          xabar: 'Bu email allaqachon ro\'yxatdan o\'tgan'
+        });
+      }
+    }
+
+    // Telefon o'zgargan bo'lsa, mavjudligini tekshirish
+    if (telefon !== user.telefon) {
+      const telefonMavjud = await User.findOne({ telefon, _id: { $ne: user._id } });
+      if (telefonMavjud) {
+        return res.status(400).json({
+          success: false,
+          xabar: 'Bu telefon raqam allaqachon ro\'yxatdan o\'tgan'
+        });
+      }
+    }
+
+    // Ma'lumotlarni yangilash
+    user.ism = ism;
+    user.familiya = familiya;
+    user.email = email;
+    user.telefon = telefon;
+    
+    // Avatar o'zgargan bo'lsa yangilash
+    if (avatar && avatar !== user.avatar) {
+      user.avatar = avatar;
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      xabar: 'Profil muvaffaqiyatli yangilandi',
+      user: {
+        id: user._id,
+        ism: user.ism,
+        familiya: user.familiya,
+        toliqIsm: user.toliqIsm,
+        email: user.email,
+        telefon: user.telefon,
+        rol: user.rol,
+        avatar: user.avatar,
+        tasdiqlanganEmail: user.tasdiqlanganEmail,
+        aktiv: user.aktiv,
+        createdAt: user.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Update profile xatosi:', error);
+    res.status(500).json({
+      success: false,
+      xabar: 'Server xatosi',
+      xato: error.message
+    });
+  }
+};
+// @desc    Parolni o'zgartirish
+// @route   PUT /api/auth/change-password
+// @access  Private
+exports.changePassword = async (req, res) => {
+  try {
+    const { joriyParol, yangiParol, yangiParolTasdiqlash } = req.body;
+
+    // Validatsiya
+    if (!joriyParol || !yangiParol || !yangiParolTasdiqlash) {
+      return res.status(400).json({
+        success: false,
+        xabar: 'Barcha maydonlarni to\'ldiring'
+      });
+    }
+
+    if (yangiParol !== yangiParolTasdiqlash) {
+      return res.status(400).json({
+        success: false,
+        xabar: 'Yangi parollar bir xil emas'
+      });
+    }
+
+    if (yangiParol.length < 6) {
+      return res.status(400).json({
+        success: false,
+        xabar: 'Yangi parol kamida 6 ta belgidan iborat bo\'lishi kerak'
+      });
+    }
+
+    // Foydalanuvchini topish (parol bilan)
+    const user = await User.findById(req.user.id).select('+parol');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        xabar: 'Foydalanuvchi topilmadi'
+      });
+    }
+
+    // Joriy parolni tekshirish
+    const parolTogri = await user.parolTekshir(joriyParol);
+
+    if (!parolTogri) {
+      return res.status(401).json({
+        success: false,
+        xabar: 'Joriy parol noto\'g\'ri'
+      });
+    }
+
+    // Yangi parolni saqlash
+    user.parol = yangiParol;
+    await user.save();
+
+    // Token yaratish
+    const token = tokenYarat(user._id);
+
+    res.status(200).json({
+      success: true,
+      xabar: 'Parol muvaffaqiyatli o\'zgartirildi',
+      token
+    });
+
+  } catch (error) {
+    console.error('Change password xatosi:', error);
     res.status(500).json({
       success: false,
       xabar: 'Server xatosi',
